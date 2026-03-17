@@ -1,0 +1,120 @@
+/*
+    Amorph Instrument: "Mega Ether-Growl – Memphis Robot Alive Mega Structure"
+    Consolidated: Heterodyne Etherphone + Iron Sub-Dough + Duracell CIA Fail + Meet-Map Repeats + Glitch Artifacts
+    Memphis family favored, council-approved, robot alive – compile in Amorph & haunt
+*/
+processor MegaEtherGrowl [[ main ]]
+{
+    input stream float pitchAntenna   [[ name: "Pitch Reach", min: 0, max: 127, init: 64 ]];
+    input stream float volumeAntenna  [[ name: "Volume Proximity", min: 0, max: 1, init: 0.5 ]];
+    input stream float subGrowl       [[ name: "Sub-Dough Growl", min: 0, max: 1, init: 0.6 ]];
+    input stream float ironMass       [[ name: "Iron Mass / Warmth", min: 0, max: 1, init: 0.8 ]];
+    input stream float subDistort     [[ name: "Sub Dist Grit", min: 0, max: 1, init: 0.4 ]];
+    input stream float tapeBark       [[ name: "Tape Bark / Wobble", min: 0, max: 1, init: 0.5 ]];
+    input stream float repeatMeet     [[ name: "Meet Map Repeat", min: 0, max: 1, init: 0.4 ]];
+    input stream float drainRate      [[ name: "Duracell Drain (CIA)", min: 0, max: 1, init: 0.08 ]];
+    input stream float diceThresh     [[ name: "CIA Dice Fail Thresh", min: 0, max: 1, init: 0.06 ]];
+    output stream float out;
+
+    float64 phaseFixed = 0.0;
+    float64 phaseVar = 0.0;
+    float currentFreq = 0.0f;
+    float smoothedVol = 0.0f;
+    float hysteresisState = 0.0f;
+    float wowLFO = 0.0f;
+    float flutterLFO = 0.0f;
+    float subAccumulator = 0.0f;
+    bool lastSign = false;
+    float voltage = 1.0f;
+    float corrosion = 0.0f;
+    float cycleCount = 0.0f;
+    float noiseSeed = 0.0f;
+    bool ciaFail = false;
+
+    // Simple delay line for meet-map repeats (~200ms max @44.1kHz)
+    float delayLine[8820];
+    int delayPos = 0;
+
+    void main()
+    {
+        const float64 baseFixed = 450000.0;
+        const float pi2 = 2.0 * pi;
+
+        loop
+        {
+            // Mechanical wobble
+            wowLFO += 0.00009f * (1.0f + tapeBark);
+            flutterLFO += 0.002f * (1.0f + tapeBark * 1.5f);
+            float mechanicalShift = (sin(wowLFO) * 0.75f + sin(flutterLFO) * 0.55f) * 0.07f * tapeBark;
+
+            // Abyssal pitch
+            let targetDev = pow(pitchAntenna / 127.0f, 5.2f) * 2400.0f;
+            currentFreq = lerp(currentFreq, targetDev, 0.0002f);
+
+            // Heterodyne + glitch micro-offset
+            let glitchOffset = (fract(sin(noiseSeed * 12.0f) * 43758.0f) * 2.0f - 1.0f) * 0.0005f * (1.0f - voltage);
+            let sFixed = sin(phaseFixed);
+            let sVar = sin(phaseVar + float64(mechanicalShift + glitchOffset));
+            float rawSig = sFixed * sVar;
+
+            // Anti-alias LP
+            static float lpState = 0.0f;
+            lpState = lerp(lpState, rawSig, 0.18f);
+            rawSig = lpState;
+
+            // Sub-dough divider
+            bool currSign = rawSig >= 0.0f;
+            if (currSign != lastSign) subAccumulator += 1.0f;
+            if (subAccumulator >= 2.0f) subAccumulator -= 2.0f;
+            lastSign = currSign;
+            float subWave = (subAccumulator < 1.0f) ? 1.0f : -1.0f;
+            float subDriven = subWave * (1.0f + subDistort * 5.0f);
+            subDriven = tanh(subDriven);
+
+            float combined = rawSig * 0.65f + subDriven * subGrowl * 0.75f;
+
+            // Iron hysteresis + tube
+            float drive = 1.0f + ironMass * 8.0f + tapeBark * 4.0f;
+            float coreIn = combined * drive;
+            float diff = coreIn - hysteresisState;
+            hysteresisState += diff * (0.16f / (1.0f + abs(diff) * ironMass));
+            float x = hysteresisState;
+            float tube = x > 0.0f ? x / (1.0f + x) : x / (1.0f - x * 0.93f);
+
+            // Duracell CIA fail
+            voltage -= drainRate * 0.00006f;
+            voltage = max(voltage, 0.0f);
+            corrosion += 0.00012f * (1.0f - voltage);
+            corrosion = min(corrosion, 1.0f);
+            noiseSeed += 0.002f;
+            float dice = fract(sin(noiseSeed * 92.0f) * 43758.0f);
+            if (dice < diceThresh || cycleCount > 8.0f * 44100.0f) ciaFail = true;
+            float processed = tube * voltage;
+            float hiss = (fract(sin(noiseSeed * 45.0f) * 43758.0f) * 2.0f - 1.0f) * corrosion * 0.2f;
+            processed += hiss;
+            if (ciaFail) processed = 0.0f;
+
+            // Volume
+            smoothedVol = lerp(smoothedVol, pow(volumeAntenna, 5.5f), 0.0015f);
+            processed *= smoothedVol;
+
+            // Meet-map repeat delay
+            int readIdx = (delayPos - 2205) % 8820;  // ~50ms base delay
+            if (readIdx < 0) readIdx += 8820;
+            float delayed = delayLine[readIdx] * repeatMeet * 0.7f;
+            processed += delayed;
+            delayLine[delayPos] = processed;
+            delayPos = (delayPos + 1) % 8820;
+
+            // Final clip
+            out = tanh(processed * 1.15f) / 1.15f;
+
+            // Phase advance
+            phaseFixed = fmod(phaseFixed + pi2 * baseFixed, pi2);
+            phaseVar = fmod(phaseVar + pi2 * (baseFixed + float64(currentFreq)), pi2);
+
+            cycleCount += 1.0f;
+            advance();
+        }
+    }
+}
